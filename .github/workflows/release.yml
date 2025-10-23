@@ -1,0 +1,303 @@
+name: Build and Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'  # Triggers on version tags like v1.0.0, v1.2.3, etc.
+  workflow_dispatch:  # Allow manual trigger from Actions tab
+
+permissions:
+  contents: write  # Required for creating releases
+
+jobs:
+  create-release:
+    name: Create GitHub Release
+    runs-on: ubuntu-latest
+    outputs:
+      upload_url: ${{ steps.create_release.outputs.upload_url }}
+      version: ${{ steps.get_version.outputs.version }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Get version from VERSION file
+        id: get_version
+        run: |
+          VERSION=$(cat VERSION)
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Version: $VERSION"
+
+      - name: Extract changelog for version
+        id: changelog
+        run: |
+          VERSION=$(cat VERSION)
+          # Extract changelog section for current version
+          awk "/## \[$VERSION\]/,/## \[/" CHANGELOG.md | sed '$d' > release_notes.txt
+          echo "Release notes extracted"
+
+      - name: Create Release
+        id: create_release
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ github.ref }}
+          release_name: VGTECH Road Damage Detector v${{ steps.get_version.outputs.version }}
+          body_path: release_notes.txt
+          draft: false
+          prerelease: false
+
+  build-linux:
+    name: Build Linux x64
+    needs: create-release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: Build Linux executable
+        run: |
+          pyinstaller build-linux.spec
+
+      - name: Package Linux release
+        run: |
+          VERSION=$(cat VERSION)
+          RELEASE_NAME="vgtech-road-damage-detector-v${VERSION}-linux-x64"
+          RELEASE_DIR="releases/${RELEASE_NAME}"
+          
+          mkdir -p "$RELEASE_DIR"
+          
+          # Copy executable
+          cp -r dist/road-damage-detector-linux/* "$RELEASE_DIR/"
+          
+          # Copy documentation
+          cp VERSION "$RELEASE_DIR/"
+          cp README.md "$RELEASE_DIR/"
+          cp CHANGELOG.md "$RELEASE_DIR/"
+          cp QUICKSTART.md "$RELEASE_DIR/"
+          
+          # Copy config template
+          cp .env.example "$RELEASE_DIR/.env"
+          
+          # Create directories
+          mkdir -p "$RELEASE_DIR/models"
+          mkdir -p "$RELEASE_DIR/data"
+          
+          # Create run script
+          cat > "$RELEASE_DIR/run.sh" << 'EOF'
+#!/bin/bash
+set -e
+
+echo "VGTECH Road Damage Detector - Linux Launcher"
+echo "=============================================="
+echo ""
+
+# Check .env file
+if [ ! -f ".env" ]; then
+    echo "ERROR: .env file not found!"
+    echo "Please copy .env.example to .env and configure it."
+    exit 1
+fi
+
+# Check model file
+MODEL_PATH=$(grep MOBILENET_MODEL_PATH .env | cut -d '=' -f2 | tr -d '"' | tr -d "'")
+if [ -z "$MODEL_PATH" ]; then
+    echo "ERROR: MOBILENET_MODEL_PATH not set in .env"
+    exit 1
+fi
+
+if [ ! -f "$MODEL_PATH" ]; then
+    echo "ERROR: Model file not found at $MODEL_PATH"
+    echo "Please download the TFLite model and place it in the models/ directory"
+    exit 1
+fi
+
+echo "Starting application..."
+./road-damage-detector-linux/road-damage-detector "$@"
+EOF
+          
+          chmod +x "$RELEASE_DIR/run.sh"
+          
+          # Create README
+          cat > "$RELEASE_DIR/README-RELEASE.txt" << 'EOF'
+VGTECH Road Damage Detector - Linux Release
+
+QUICK START:
+1. Configure .env file with your camera indices and Supabase credentials
+2. Place your TFLite model in models/ directory
+3. Run: ./run.sh
+
+REQUIREMENTS:
+- Linux x64 (Ubuntu 18.04+, Debian 10+, or compatible)
+- OpenGL support for display
+- Camera permissions
+- Internet connection (for Supabase sync)
+
+For detailed documentation, see README.md and QUICKSTART.md
+
+EOF
+          
+          # Create archive
+          cd releases
+          tar -czf "${RELEASE_NAME}.tar.gz" "${RELEASE_NAME}"
+          echo "Archive created: ${RELEASE_NAME}.tar.gz"
+
+      - name: Upload Linux Release Asset
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ needs.create-release.outputs.upload_url }}
+          asset_path: ./releases/vgtech-road-damage-detector-v${{ needs.create-release.outputs.version }}-linux-x64.tar.gz
+          asset_name: vgtech-road-damage-detector-v${{ needs.create-release.outputs.version }}-linux-x64.tar.gz
+          asset_content_type: application/gzip
+
+  build-windows:
+    name: Build Windows x64
+    needs: create-release
+    runs-on: windows-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: Build Windows executable
+        run: |
+          pyinstaller build-windows.spec
+
+      - name: Package Windows release
+        shell: pwsh
+        run: |
+          $VERSION = Get-Content VERSION -Raw
+          $VERSION = $VERSION.Trim()
+          $RELEASE_NAME = "vgtech-road-damage-detector-v${VERSION}-windows-x64"
+          $RELEASE_DIR = "releases\${RELEASE_NAME}"
+          
+          New-Item -ItemType Directory -Force -Path $RELEASE_DIR
+          
+          # Copy executable
+          Copy-Item -Recurse -Force "dist\road-damage-detector-windows\*" "$RELEASE_DIR\"
+          
+          # Copy documentation
+          Copy-Item VERSION "$RELEASE_DIR\"
+          Copy-Item README.md "$RELEASE_DIR\"
+          Copy-Item CHANGELOG.md "$RELEASE_DIR\"
+          Copy-Item QUICKSTART.md "$RELEASE_DIR\"
+          
+          # Copy config template
+          Copy-Item .env.example "$RELEASE_DIR\.env"
+          
+          # Create directories
+          New-Item -ItemType Directory -Force -Path "$RELEASE_DIR\models"
+          New-Item -ItemType Directory -Force -Path "$RELEASE_DIR\data"
+          
+          # Create batch launcher
+          @'
+@echo off
+echo VGTECH Road Damage Detector - Windows Launcher
+echo ==============================================
+echo.
+
+if not exist ".env" (
+    echo ERROR: .env file not found!
+    echo Please copy .env.example to .env and configure it.
+    pause
+    exit /b 1
+)
+
+for /f "tokens=2 delims==" %%a in ('findstr MOBILENET_MODEL_PATH .env') do set MODEL_PATH=%%a
+set MODEL_PATH=%MODEL_PATH:"=%
+
+if not exist "%MODEL_PATH%" (
+    echo ERROR: Model file not found at %MODEL_PATH%
+    echo Please download the TFLite model and place it in the models\ directory
+    pause
+    exit /b 1
+)
+
+echo Starting application...
+road-damage-detector-windows\road-damage-detector.exe %*
+'@ | Out-File -FilePath "$RELEASE_DIR\run.bat" -Encoding ASCII
+          
+          # Create PowerShell launcher
+          @'
+#!/usr/bin/env pwsh
+Write-Host "VGTECH Road Damage Detector - Windows Launcher" -ForegroundColor Cyan
+Write-Host "==============================================" -ForegroundColor Cyan
+Write-Host ""
+
+if (-not (Test-Path ".env")) {
+    Write-Host "ERROR: .env file not found!" -ForegroundColor Red
+    Write-Host "Please copy .env.example to .env and configure it."
+    pause
+    exit 1
+}
+
+$envContent = Get-Content .env
+$modelPath = ($envContent | Select-String "MOBILENET_MODEL_PATH").Line -replace '.*=', '' -replace '"', '' -replace "'", ''
+
+if (-not (Test-Path $modelPath)) {
+    Write-Host "ERROR: Model file not found at $modelPath" -ForegroundColor Red
+    Write-Host "Please download the TFLite model and place it in the models\ directory"
+    pause
+    exit 1
+}
+
+Write-Host "Starting application..." -ForegroundColor Green
+& ".\road-damage-detector-windows\road-damage-detector.exe" $args
+'@ | Out-File -FilePath "$RELEASE_DIR\run.ps1" -Encoding UTF8
+          
+          # Create README
+          @'
+VGTECH Road Damage Detector - Windows Release
+
+QUICK START:
+1. Configure .env file with your camera indices and Supabase credentials
+2. Place your TFLite model in models\ directory
+3. Run: run.bat (or run.ps1 for PowerShell)
+
+REQUIREMENTS:
+- Windows 10/11 (64-bit)
+- Camera permissions
+- Internet connection (for Supabase sync)
+
+For detailed documentation, see README.md and QUICKSTART.md
+
+'@ | Out-File -FilePath "$RELEASE_DIR\README-RELEASE.txt" -Encoding UTF8
+          
+          # Create archive
+          Compress-Archive -Path $RELEASE_DIR -DestinationPath "releases\${RELEASE_NAME}.zip" -Force
+          Write-Host "Archive created: ${RELEASE_NAME}.zip"
+
+      - name: Upload Windows Release Asset
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ needs.create-release.outputs.upload_url }}
+          asset_path: ./releases/vgtech-road-damage-detector-v${{ needs.create-release.outputs.version }}-windows-x64.zip
+          asset_name: vgtech-road-damage-detector-v${{ needs.create-release.outputs.version }}-windows-x64.zip
+          asset_content_type: application/zip

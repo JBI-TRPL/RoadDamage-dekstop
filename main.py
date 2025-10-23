@@ -26,6 +26,13 @@ sys.path.insert(0, str(Path(__file__).parent))
 from app.ui.main_window import MainWindow
 from app import config
 
+# Read version
+VERSION_FILE = Path(__file__).parent / "VERSION"
+try:
+    VERSION = VERSION_FILE.read_text().strip()
+except Exception:
+    VERSION = "unknown"
+
 # Setup logging
 logging.basicConfig(
     level=logging.INFO,
@@ -67,6 +74,7 @@ def main():
     load_dotenv()
     
     logger.info("🚗 VGTECH Road Damage Detector - Jetson Edition")
+    logger.info(f"Version: {VERSION}")
     logger.info(f"Python: {sys.version}")
     logger.info(f"Working directory: {Path.cwd()}")
     

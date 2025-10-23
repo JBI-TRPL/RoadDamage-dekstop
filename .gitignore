@@ -60,3 +60,18 @@ captured_images/
 
 # PyQt
 *.ui.py
+
+# PyInstaller
+*.spec.bak
+build/
+dist/
+*.manifest
+*.spec~
+
+# Release artifacts
+releases/
+*.tar.gz
+*.zip
+icon_preview.png
+
+TESTING_MAC.md
